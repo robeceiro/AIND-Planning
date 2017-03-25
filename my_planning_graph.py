@@ -312,6 +312,21 @@ class PlanningGraph():
         #   to see if a proposed PgNode_a has prenodes that are a subset of the previous S level.  Once an
         #   action node is added, it MUST be connected to the S node instances in the appropriate s_level set.
 
+
+        self.a_levels.append(set())  # A0 set of action_nodes - empty to start
+        for action in self.all_actions:
+            action_node = PgNode_a(action)
+            #determine what actions to add and create those PgNode_a objects
+            if action_node.prenodes.issubset(self.s_levels[level]):
+                self.a_levels[level].add(action_node)
+                for state_node in action_node.prenodes:
+                    if state_node in self.s_levels[level]:
+                        #connect the nodes to the previous S literal level
+                        if action_node not in state_node.children:
+                            state_node.children.add(action_node)
+                        if state_node not in action_node.children:
+                            action_node.parents.add(state_node)
+
     def add_literal_level(self, level):
         ''' add an S (literal) level to the Planning Graph
 
@@ -329,6 +344,23 @@ class PlanningGraph():
         #   may be "added" to the set without fear of duplication.  However, it is important to then correctly create and connect
         #   all of the new S nodes as children of all the A nodes that could produce them, and likewise add the A nodes to the
         #   parent sets of the S nodes
+
+        # S0 already initialized in create_graph
+        if level == 0:
+            pass
+        else:
+            #Add new empty list
+            self.s_levels.append(set())
+            for action_node in self.a_levels[level-1]:
+                for state_node in action_node.effnodes:
+                    if state_node not in self.s_levels[level]:
+                        self.s_levels[level].add(state_node)
+                    #connect the nodes
+                        if state_node not in action_node.children:
+                            action_node.children.add(state_node)
+                        if action_node not in state_node.children:
+                            state_node.parents.add(action_node)
+
 
     def update_a_mutex(self, nodeset):
         ''' Determine and update sibling mutual exclusion for A-level nodes
@@ -386,7 +418,14 @@ class PlanningGraph():
         :param node_a2: PgNode_a
         :return: bool
         '''
-        # TODO test for Inconsistent Effects between nodes
+
+        #Need to check for:
+        #-Inconsistent effects:one action negates an effect of the other. For example Eat(Cake) and the persistence of Have(Cake) have inconsistent effects because they disagree on the effect Have(Cake).
+        
+        if any(i in node_a1.action.effect_add for i in node_a2.action.effect_rem):
+            return True
+        if any(i in node_a2.action.effect_add for i in node_a1.action.effect_rem):
+            return True
         return False
 
     def interference_mutex(self, node_a1: PgNode_a, node_a2: PgNode_a) -> bool:
@@ -403,7 +442,16 @@ class PlanningGraph():
         :param node_a2: PgNode_a
         :return: bool
         '''
-        # TODO test for Interference between nodes
+        #Need to check for:
+        #-Interference:one of the effects of one action is the negation of a precondition of the other. For example Eat(Cake) interferes with the persistence of Have(Cake) by negat- ing its precondition.
+        if any(i in node_a1.action.effect_add for i in node_a2.action.precond_neg):
+            return True
+        if any(i in node_a1.action.effect_rem for i in node_a2.action.precond_pos):
+            return True
+        if any(i in node_a2.action.effect_add for i in node_a1.action.precond_neg):
+            return True
+        if any(i in node_a2.action.effect_rem for i in node_a1.action.precond_pos):
+            return True
         return False
 
     def competing_needs_mutex(self, node_a1: PgNode_a, node_a2: PgNode_a) -> bool:
@@ -416,8 +464,14 @@ class PlanningGraph():
         :param node_a2: PgNode_a
         :return: bool
         '''
+        #Need to check for:
+        #-Competing needs:one of the preconditions of one action is mutually exclusive with a precondition of the other. For example, Bake(Cake) and Eat(Cake) are mutex because they compete on the value of the Have(Cake) precondition.
 
-        # TODO test for Competing Needs between nodes
+        #HINT: The PgNode.is_mutex method can be used to test whether two nodes are mutually exclusive.
+        for a in node_a1.parents:
+            for b in node_a2.parents:
+                if a.is_mutex(b):
+                    return True
         return False
 
     def update_s_mutex(self, nodeset: set):
@@ -452,7 +506,9 @@ class PlanningGraph():
         :param node_s2: PgNode_s
         :return: bool
         '''
-        # TODO test for negation between nodes
+        neg_node_s2 = PgNode_s(node_s2.symbol,not node_s2.is_pos)
+        if node_s1.__eq__(neg_node_s2):
+            return True
         return False
 
     def inconsistent_support_mutex(self, node_s1: PgNode_s, node_s2: PgNode_s):
@@ -471,15 +527,40 @@ class PlanningGraph():
         :param node_s2: PgNode_s
         :return: bool
         '''
-        # TODO test for Inconsistent Support between nodes
-        return False
+        for i in node_s1.parents:
+            for j in node_s2.parents:
+                if not i.is_mutex(j):
+                    return False
+        return True
 
     def h_levelsum(self) -> int:
         '''The sum of the level costs of the individual goals (admissible if goals independent)
 
         :return: int
+
+        The level sum heuristic, following the subgoal independence assumption, 
+        returns the sum of the level costs of the goals; 
+        this is inadmissible but works very well in practice for problems that are largely decomposable. 
+        It is much more accurate than the number-of-unsatisfied-goals heuristic from Section 11.2. 
+        or our problem, the heuristic estimate for the conjunctive goal Have(Cake)∧Eaten(Cake) will be 0+1 = 1, 
+        whereas the correct answer is 2. Moreover, if we eliminated the Bake(Cake) action, 
+        the estimate would still be 1, but the conjunctive goal would be impossible. 
         '''
         level_sum = 0
         # TODO implement
         # for each goal in the problem, determine the level cost, then add them together
+        for goal in self.problem.goal:
+            found_goal = False
+            node_goal_pos = PgNode_s(goal,True)
+            level = 0
+            while(not found_goal):
+                for state_node in self.s_levels[level]:
+                    if state_node == node_goal_pos:
+                        level_sum += level
+                        found_goal = True
+                        break
+                level += 1
         return level_sum
+
+
+
